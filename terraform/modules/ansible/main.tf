@@ -76,6 +76,33 @@ resource "aws_iam_policy" "ansible_ssm" {
   })
 }
 
+resource "aws_iam_policy" "ansible_ssm_bucket" {
+  name_prefix = "${var.name}-ansible-ssm-bucket-"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket"
+        ]
+        Resource = aws_s3_bucket.ssm.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "${aws_s3_bucket.ssm.arn}/*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "this" {
   for_each = {
     ssm_core    = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
@@ -84,6 +111,11 @@ resource "aws_iam_role_policy_attachment" "this" {
 
   role       = aws_iam_role.this.name
   policy_arn = each.value
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_bucket" {
+  role       = aws_iam_role.this.name
+  policy_arn = aws_iam_policy.ansible_ssm_bucket.arn
 }
 
 resource "aws_iam_instance_profile" "this" {

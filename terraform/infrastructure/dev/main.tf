@@ -73,6 +73,14 @@ module "alb" {
   tags = local.tags
 }
 
+module "ecr" {
+  source = "../../modules/ecr"
+
+  repositories = var.ecr_repositories
+
+  tags = local.tags
+}
+
 module "ec2" {
   source = "../../modules/ec2"
 
@@ -100,6 +108,10 @@ module "ansible" {
 
   tags = local.tags
 }
+
+####################################################################
+## Bootstrap Ansible control node via SSM Document and Association
+####################################################################
 
 resource "aws_ssm_document" "ansible_bootstrap" {
   count         = var.enable_ansible_bootstrap ? 1 : 0
@@ -155,4 +167,22 @@ resource "aws_security_group_rule" "this" {
 
   cidr_blocks              = try(each.value.cidr_blocks, null)
   source_security_group_id = try(each.value.source_security_group_id, null)
+}
+
+####################################################################
+## GitHub Actions OIDC (module)
+####################################################################
+
+module "github_actions" {
+  source = "../../modules/github-actions"
+
+  name_prefix                 = local.name_prefix
+  project                     = var.project
+  environment                 = var.environment
+  openid_connect_url          = var.openid_connect_url
+  client_id_list              = var.client_id_list
+  github_actions_subjects     = var.github_actions_subjects
+  role_name                   = var.github_actions_role_name
+
+  tags = local.tags
 }

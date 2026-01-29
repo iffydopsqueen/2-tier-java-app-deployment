@@ -133,6 +133,12 @@ variable "alb_health_check_path" {
   default     = "/"
 }
 
+variable "ecr_repositories" {
+  type        = set(string)
+  description = "ECR repositories to create for application images"
+  default     = []
+}
+
 variable "ec2_ami_id" {
   type        = string
   description = "AMI ID for the app instance"
@@ -177,4 +183,28 @@ variable "tags" {
   type        = map(string)
   description = "Additional tags applied to all resources"
   default     = {}
+}
+
+variable "openid_connect_url" {
+  type = string
+  description = "OpenID Connect URL for authentication requests"
+  default = "https://token.actions.githubusercontent.com"
+}
+
+variable "client_id_list" {
+  type = list(string)
+  description = "List of client IDs (audiences) for the OIDC provider"
+  default = ["sts.amazonaws.com"]
+}
+
+variable "github_actions_subjects" {
+  description = "Allowed GitHub Actions OIDC subject claims"
+  type        = list(string)
+  default     = ["repo:iffydopsqueen/*"]
+}
+
+variable "github_actions_role_name" {
+  description = "IAM EC2 role name for GitHub Actions OIDC"
+  type        = string
+  default     = "github-actions-oidc-deploy-role"
 }

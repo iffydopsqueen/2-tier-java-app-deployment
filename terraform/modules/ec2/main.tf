@@ -80,5 +80,6 @@ resource "aws_instance" "this" {
 
   tags = merge(var.tags, {
     Name = format("%s-app-%02d", var.name, each.value + 1)
+    Role = "app"
   })
 }
