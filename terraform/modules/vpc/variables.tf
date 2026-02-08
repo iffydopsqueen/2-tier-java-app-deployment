@@ -16,31 +16,16 @@ variable "azs" {
 variable "public_subnet_cidrs" {
   type        = list(string)
   description = "CIDR blocks for public subnets in each AZ (index aligned to azs)"
-
-  validation {
-    condition     = length(var.public_subnet_cidrs) == length(var.azs)
-    error_message = "public_subnet_cidrs must have the same length as azs"
-  }
 }
 
 variable "private_app_subnet_cidrs" {
   type        = list(string)
   description = "CIDR blocks for private app subnets in each AZ (index aligned to azs)"
-
-  validation {
-    condition     = length(var.private_app_subnet_cidrs) == length(var.azs)
-    error_message = "private_app_subnet_cidrs must have the same length as azs"
-  }
 }
 
 variable "private_db_subnet_cidrs" {
   type        = list(string)
   description = "CIDR blocks for private DB subnets in each AZ (index aligned to azs)"
-
-  validation {
-    condition     = length(var.private_db_subnet_cidrs) == length(var.azs)
-    error_message = "private_db_subnet_cidrs must have the same length as azs"
-  }
 }
 
 variable "enable_nat_gateway" {
@@ -52,7 +37,7 @@ variable "enable_nat_gateway" {
 variable "enable_ssm_endpoints" {
   type        = bool
   description = "Whether to create VPC interface endpoints for SSM (ssm, ssmmessages, ec2messages)"
-  default     = true
+  default     = false
 }
 
 variable "tags" {

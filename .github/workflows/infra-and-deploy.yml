@@ -3,9 +3,6 @@ name: Infra and Deploy
 on:
   workflow_dispatch:
     inputs:
-      aws_region:
-        description: "AWS region"
-        required: true
       environment:
         description: "Environment directory (dev/stg/prd)"
         required: true
@@ -30,6 +27,7 @@ env:
   # TF_VAR_attach_ecr_readonly: "true"
   GHA_OIDC_ROLE_NAME: ${{ vars.GHA_OIDC_ROLE_NAME }}
   TF_DIR: "terraform/infrastructure/${{ inputs.environment }}"
+  ANSIBLE_CONFIG: "ansible/ansible.cfg"
 
 jobs:
   build-and-deploy:
@@ -51,12 +49,23 @@ jobs:
 
       - name: Set environment directory
         run: |
-          echo "${{ env.TF_DIR }}" >> $GITHUB_ENV
+          echo "TF_DIR=${{ env.TF_DIR }}" >> $GITHUB_ENV
           echo "PROJECT=${{ inputs.project }}" >> $GITHUB_ENV
           echo "ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
+          echo "SSM_DOCUMENT_NAME=${{ inputs.project }}-${{ inputs.environment }}-ansible-run" >> $GITHUB_ENV
 
       - name: Terraform init
         run: terraform -chdir=${{ env.TF_DIR }} init -backend-config=backend.hcl
+
+      - name: Terraform fmt
+        run: |
+          terraform fmt -list=true -write=true -recursive
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        run: terraform -chdir=${{ env.TF_DIR }} plan -no-color -out=tfplan
 
       - name: Terraform apply
         run: terraform -chdir=${{ env.TF_DIR }} apply -auto-approve
@@ -82,21 +91,20 @@ jobs:
 
       - name: Build and push WordPress image
         run: |
-          IMAGE_TAG=${GITHUB_SHA}
+          IMAGE_TAG=v${GITHUB_RUN_NUMBER}
           docker build -t ${WORDPRESS_REPO}:${IMAGE_TAG} -f app/Dockerfile app
           docker push ${WORDPRESS_REPO}:${IMAGE_TAG}
           echo "WORDPRESS_IMAGE=${WORDPRESS_REPO}:${IMAGE_TAG}" >> $GITHUB_ENV
           echo "WORDPRESS_ECR_REGISTRY=$(echo ${WORDPRESS_REPO} | cut -d/ -f1)" >> $GITHUB_ENV
 
-      - name: Install Ansible
+      - name: Package Ansible artifacts
         run: |
-          python3 -m pip install --upgrade pip
-          pip3 install ansible boto3 botocore
-          ansible-galaxy collection install amazon.aws
+          tar -czf /tmp/ansible.tgz ansible
+          aws s3 cp /tmp/ansible.tgz s3://${ANSIBLE_SSM_BUCKET}/playbooks/${GITHUB_SHA}/ansible.tgz
 
-      - name: Run Ansible (WordPress)
+      - name: Run Ansible on control node (SSM)
         env:
-          AWS_REGION: ${{ inputs.aws_region }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
           PROJECT: ${{ env.PROJECT }}
           ENVIRONMENT: ${{ env.ENVIRONMENT }}
           WORDPRESS_IMAGE: ${{ env.WORDPRESS_IMAGE }}
@@ -105,4 +113,45 @@ jobs:
           DB_NAME: wordpress
           DB_SECRET_ARN: ${{ env.DB_SECRET_ARN }}
           ANSIBLE_SSM_BUCKET: ${{ env.ANSIBLE_SSM_BUCKET }}
-        run: ansible-playbook ansible/wordpress.yml
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "${SSM_DOCUMENT_NAME}" \
+            --targets "Key=tag:Project,Values=${PROJECT}" "Key=tag:Environment,Values=${ENVIRONMENT}" "Key=tag:Role,Values=ansible-control" \
+            --parameters commands="[
+              \"set -eux\",
+              \"mkdir -p /tmp/ansible-run-${GITHUB_SHA}\",
+              \"command -v aws >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y awscli) || (sudo yum install -y awscli)\",
+              \"aws s3 cp s3://${ANSIBLE_SSM_BUCKET}/playbooks/${GITHUB_SHA}/ansible.tgz /tmp/ansible-run-${GITHUB_SHA}/ansible.tgz\",
+              \"tar -xzf /tmp/ansible-run-${GITHUB_SHA}/ansible.tgz -C /tmp/ansible-run-${GITHUB_SHA}\",
+              \"cd /tmp/ansible-run-${GITHUB_SHA}\",
+              \"export AWS_REGION=${AWS_REGION} PROJECT=${PROJECT} ENVIRONMENT=${ENVIRONMENT} WORDPRESS_IMAGE=${WORDPRESS_IMAGE} WORDPRESS_ECR_REGISTRY=${WORDPRESS_ECR_REGISTRY} DB_HOST=${DB_HOST} DB_NAME=${DB_NAME} DB_SECRET_ARN=${DB_SECRET_ARN} ANSIBLE_SSM_BUCKET=${ANSIBLE_SSM_BUCKET} ANSIBLE_CONFIG=/tmp/ansible-run-${GITHUB_SHA}/ansible/ansible.cfg ANSIBLE_COLLECTIONS_PATHS=/usr/share/ansible/collections:/root/.ansible/collections\",
+              \"export PATH=/opt/ansible-venv/bin:$PATH\",
+              \"if ! command -v session-manager-plugin >/dev/null 2>&1; then ARCH=$(uname -m); if [ \\\"${ARCH}\\\" = \\\"x86_64\\\" ]; then PKG_ARCH=64bit; elif [ \\\"${ARCH}\\\" = \\\"aarch64\\\" ] || [ \\\"${ARCH}\\\" = \\\"arm64\\\" ]; then PKG_ARCH=arm64; else PKG_ARCH=64bit; fi; sudo apt-get update -y; curl -sSLo /tmp/session-manager-plugin.deb https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_${PKG_ARCH}/session-manager-plugin.deb && sudo dpkg -i /tmp/session-manager-plugin.deb || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y; fi\",
+              \"if [ -x /opt/ansible-venv/bin/pip ]; then /opt/ansible-venv/bin/pip install --upgrade boto3 botocore; else python3 -m pip install --upgrade boto3 botocore; fi\",
+              \"ansible-galaxy collection list amazon.aws >/dev/null 2>&1 || ansible-galaxy collection install amazon.aws -p /usr/share/ansible/collections\",
+              \"ansible-inventory --list -vvv\",
+              \"ansible-playbook ansible/wordpress.yml\"
+            ]" \
+            --comment "Run WordPress deploy via Ansible control node" \
+            --query "Command.CommandId" \
+            --output text)
+
+          for i in {1..60}; do
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id "${COMMAND_ID}" \
+              --details \
+              --query "CommandInvocations[0].Status" \
+              --output text)
+
+            echo "SSM command status: ${STATUS}"
+            if [[ "${STATUS}" == "Success" ]]; then
+              exit 0
+            fi
+            if [[ "${STATUS}" == "Failed" || "${STATUS}" == "TimedOut" || "${STATUS}" == "Cancelled" ]]; then
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "SSM command did not complete in time."
+          exit 1

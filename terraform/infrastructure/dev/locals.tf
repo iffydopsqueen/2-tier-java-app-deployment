@@ -6,15 +6,11 @@ locals {
     Environment = var.environment
   })
 
-  ansible_bootstrap_commands = [
-    "sudo apt-get update -y",
-    "sudo apt-get install -y python3 python3-venv python3-pip",
-    "sudo apt-get install -y ansible git unzip jq awscli",
-    "sudo pip3 install boto3 botocore",
-    "curl -sSLo /tmp/session-manager-plugin.deb https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb",
-    "sudo dpkg -i /tmp/session-manager-plugin.deb",
-    "ansible-galaxy collection install amazon.aws",
-  ]
+  ansible_bootstrap_script = file("${path.module}/scripts/ansible-bootstrap.sh")
+
+  ansible_bootstrap_commands = compact([
+    for line in split("\n", trimspace(local.ansible_bootstrap_script)) : line
+  ])
 
   app_user_data = <<-EOF
     #!/bin/bash
@@ -55,6 +51,14 @@ locals {
         type              = "egress"
         from_port         = 443
         to_port           = 443
+        protocol          = "tcp"
+        cidr_blocks       = ["0.0.0.0/0"]
+        security_group_id = module.ec2.app_sg_id
+      }
+      app_egress_http = {
+        type              = "egress"
+        from_port         = 80
+        to_port           = 80
         protocol          = "tcp"
         cidr_blocks       = ["0.0.0.0/0"]
         security_group_id = module.ec2.app_sg_id

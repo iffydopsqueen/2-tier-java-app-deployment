@@ -139,6 +139,12 @@ variable "ecr_repositories" {
   default     = []
 }
 
+variable "ecr_force_delete" {
+  type        = bool
+  description = "Force delete ECR repositories even if they contain images"
+  default     = false
+}
+
 variable "ec2_ami_id" {
   type        = string
   description = "AMI ID for the app instance"
@@ -173,6 +179,12 @@ variable "enable_ansible_bootstrap" {
   default     = true
 }
 
+variable "ansible_ssm_bucket_force_destroy" {
+  type        = bool
+  description = "Force destroy the Ansible SSM bucket even if it contains objects"
+  default     = false
+}
+
 variable "attach_ecr_readonly" {
   type        = bool
   description = "Attach ECR read-only policy to the EC2 role"
@@ -185,26 +197,26 @@ variable "tags" {
   default     = {}
 }
 
-variable "openid_connect_url" {
-  type = string
-  description = "OpenID Connect URL for authentication requests"
-  default = "https://token.actions.githubusercontent.com"
-}
+# variable "openid_connect_url" {
+#   type = string
+#   description = "OpenID Connect URL for authentication requests"
+#   default = "https://token.actions.githubusercontent.com"
+# }
 
-variable "client_id_list" {
-  type = list(string)
-  description = "List of client IDs (audiences) for the OIDC provider"
-  default = ["sts.amazonaws.com"]
-}
+# variable "client_id_list" {
+#   type = list(string)
+#   description = "List of client IDs (audiences) for the OIDC provider"
+#   default = ["sts.amazonaws.com"]
+# }
 
-variable "github_actions_subjects" {
-  description = "Allowed GitHub Actions OIDC subject claims"
-  type        = list(string)
-  default     = ["repo:iffydopsqueen/*"]
-}
+# variable "github_actions_subjects" {
+#   description = "Allowed GitHub Actions OIDC subject claims"
+#   type        = list(string)
+#   default     = ["repo:iffydopsqueen/*"]
+# }
 
-variable "github_actions_role_name" {
-  description = "IAM EC2 role name for GitHub Actions OIDC"
-  type        = string
-  default     = "github-actions-oidc-deploy-role"
-}
+# variable "github_actions_role_name" {
+#   description = "IAM EC2 role name for GitHub Actions OIDC"
+#   type        = string
+#   default     = "github-actions-oidc-deploy-role"
+# }

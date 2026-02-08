@@ -31,6 +31,21 @@ resource "aws_vpc" "this" {
   enable_dns_support   = true
   enable_dns_hostnames = true
 
+  lifecycle {
+    precondition {
+      condition     = length(var.public_subnet_cidrs) == length(var.azs)
+      error_message = "public_subnet_cidrs must have the same length as azs."
+    }
+    precondition {
+      condition     = length(var.private_app_subnet_cidrs) == length(var.azs)
+      error_message = "private_app_subnet_cidrs must have the same length as azs."
+    }
+    precondition {
+      condition     = length(var.private_db_subnet_cidrs) == length(var.azs)
+      error_message = "private_db_subnet_cidrs must have the same length as azs."
+    }
+  }
+
   tags = merge(var.tags, {
     Name = var.name
   })
@@ -66,6 +81,7 @@ resource "aws_eip" "nat" {
   for_each = var.enable_nat_gateway ? local.public_subnet_map : {}
 
   domain = "vpc"
+  depends_on    = [aws_internet_gateway.this] # To avoid IGW hanging during destroy
 
   tags = merge(var.tags, {
     Name = "${var.name}-nat-eip-${each.key}"
@@ -77,6 +93,7 @@ resource "aws_nat_gateway" "this" {
 
   allocation_id = aws_eip.nat[each.key].id
   subnet_id     = aws_subnet.this["${each.key}-public"].id
+  depends_on    = [aws_internet_gateway.this] # To avoid IGW hanging during destroy
 
   tags = merge(var.tags, {
     Name = "${var.name}-nat-${each.key}"

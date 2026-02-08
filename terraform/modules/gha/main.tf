@@ -1,15 +1,18 @@
-# Fetch the TLS certificate chain for GitHub Actions OIDC
-data "tls_certificate" "github_actions" {
-  url = var.openid_connect_url
+locals {
+  ssm_document_name = trimspace(var.ssm_document_name) != "" ? trimspace(var.ssm_document_name) : "${var.name_prefix}-ansible-run"
 }
 
-# Create the IAM OIDC provider for GitHub Actions
+# Fetch the TLS certificate chain for GitHub Actions OIDC
 resource "aws_iam_openid_connect_provider" "this" {
   url             = var.openid_connect_url
   client_id_list  = var.client_id_list
-  thumbprint_list = [data.tls_certificate.github_actions.certificates[0].sha1_fingerprint]
+  thumbprint_list = [ data.tls_certificate.github_actions.certificates[0].sha1_fingerprint ]
 
   tags = var.tags
+}
+
+data "tls_certificate" "github_actions" {
+  url = var.openid_connect_url
 }
 
 # IAM Role Policy for GitHub Actions to assume via OIDC
@@ -45,8 +48,37 @@ resource "aws_iam_role" "this" {
   tags = var.tags
 }
 
+resource "aws_ssm_document" "ansible_run" {
+  name          = local.ssm_document_name
+  document_type = "Command"
+
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Run Ansible playbooks on the control node"
+    parameters = {
+      commands = {
+        type        = "StringList"
+        description = "Shell commands to run"
+      }
+    }
+    mainSteps = [
+      {
+        action = "aws:runShellScript"
+        name   = "runShell"
+        inputs = {
+          runCommand = "{{ commands }}"
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
 # Least-privilege policy for GitHub Actions (scoped by tags).
 data "aws_iam_policy_document" "permissions" {
+
+  # Baseline read-only discovery across services used by Terraform
   statement {
     sid     = "ReadOnlyForDiscovery"
     effect  = "Allow"
@@ -71,6 +103,7 @@ data "aws_iam_policy_document" "permissions" {
     resources = ["*"]
   }
 
+  # ECR auth token is account-wide and cannot be scoped to a repo ARN.
   statement {
     sid     = "EcrAuthToken"
     effect  = "Allow"
@@ -78,6 +111,7 @@ data "aws_iam_policy_document" "permissions" {
     resources = ["*"]
   }
 
+  # CI needs to upload artifacts to S3 (SSM bundle, etc).
   statement {
     sid     = "S3FullAccessAllBuckets"
     effect  = "Allow"
@@ -85,6 +119,38 @@ data "aws_iam_policy_document" "permissions" {
     resources = ["*"]
   }
 
+  # SendCommand requires explicit permission on the SSM document ARN.
+  statement {
+    sid     = "SsmSendCommandDocument"
+    effect  = "Allow"
+    actions = ["ssm:SendCommand"]
+    resources = [aws_ssm_document.ansible_run.arn]
+  }
+
+  # SendCommand against instances is scoped by tags.
+  statement {
+    sid     = "SsmSendCommandTaggedInstances"
+    effect  = "Allow"
+    actions = ["ssm:SendCommand"]
+    resources = [
+      "arn:aws:ec2:*:*:instance/*",
+      "arn:aws:ssm:*:*:managed-instance/*"
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [var.environment]
+    }
+  }
+
+  # Create/modify/delete for resources that support request tagging at creation time.
   statement {
     sid     = "TaggableResourceCreation"
     effect  = "Allow"
@@ -162,6 +228,7 @@ data "aws_iam_policy_document" "permissions" {
     }
   }
 
+  # Manage resources after creation, but only when resource tags match.
   statement {
     sid     = "ManageTaggedResources"
     effect  = "Allow"
@@ -189,6 +256,51 @@ data "aws_iam_policy_document" "permissions" {
     }
   }
 
+  # Listener/Rule APIs don't reliably support tag conditions, so allow explicitly.
+  statement {
+    sid     = "ManageElbListeners"
+    effect  = "Allow"
+    actions = [
+      "elasticloadbalancing:DeleteListener",
+      "elasticloadbalancing:DeleteRule",
+      "elasticloadbalancing:ModifyListener",
+      "elasticloadbalancing:ModifyRule"
+    ]
+    resources = ["*"]
+  }
+
+  # Cleanup for IAM resources that have Project/Environment tags.
+  statement {
+    sid     = "ManageTaggedIamResources"
+    effect  = "Allow"
+    actions = [
+      "iam:DeleteRole",
+      "iam:DetachRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:DeleteInstanceProfile",
+      "iam:DeletePolicy",
+      "iam:DeletePolicyVersion",
+      "iam:UntagRole",
+      "iam:UntagPolicy",
+      "iam:UntagInstanceProfile"
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [var.environment]
+    }
+  }
+
+  # Limit PassRole to AWS services that this stack provisions.
   statement {
     sid     = "PassRoleToServices"
     effect  = "Allow"
@@ -205,6 +317,56 @@ data "aws_iam_policy_document" "permissions" {
         "elasticloadbalancing.amazonaws.com"
       ]
     }
+  }
+
+  # Bootstrap actions that don't carry request tags at create time.
+  statement {
+    sid    = "BootstrapIamSsmEip"
+    effect = "Allow"
+    actions = [
+      "ssm:CreateDocument",
+      "ssm:UpdateDocument",
+      "ssm:UpdateDocumentDefaultVersion",
+      "ssm:DeleteDocument",
+      "ssm:CreateAssociation",
+      "ssm:UpdateAssociation",
+      "ssm:DeleteAssociation",
+      "iam:CreatePolicy",
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicy",
+      "iam:DeletePolicyVersion",
+      "iam:CreateInstanceProfile",
+      "iam:DeleteInstanceProfile",
+      "iam:AddRoleToInstanceProfile",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:PassRole",
+      "ec2:AllocateAddress",
+      "ec2:ReleaseAddress",
+      "ec2:AssociateAddress",
+      "ec2:DisassociateAddress",
+      "ec2:DetachNetworkInterface"
+    ]
+    resources = ["*"]
+  }
+
+  # EC2 instance launch (RunInstances doesn't always include request tags).
+  statement {
+    sid    = "Ec2RunInstances"
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+      "ec2:CreateTags",
+      "ec2:CreateVolume",
+      "ec2:AttachVolume",
+      "ec2:CreateNetworkInterface",
+      "ec2:AttachNetworkInterface",
+      "ec2:DeleteNetworkInterface"
+    ]
+    resources = ["*"]
   }
 }
 

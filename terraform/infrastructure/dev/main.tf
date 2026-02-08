@@ -31,7 +31,7 @@ module "vpc" {
 module "secrets" {
   source = "../../modules/asm"
 
-  name     = "${local.name_prefix}-db-credentials-v1"
+  name     = "${local.name_prefix}-db-credentials"
   username = var.db_username
   password = random_password.db.result
 
@@ -70,13 +70,15 @@ module "alb" {
   target_port       = var.alb_target_port
   health_check_path = var.alb_health_check_path
 
-  tags = local.tags
+  tags       = local.tags
+  depends_on = [module.vpc] # To avoid IGW hanging during destroy 
 }
 
 module "ecr" {
   source = "../../modules/ecr"
 
   repositories = var.ecr_repositories
+  force_delete = var.ecr_force_delete
 
   tags = local.tags
 }
@@ -100,11 +102,12 @@ module "ec2" {
 module "ansible" {
   source = "../../modules/ansible"
 
-  name          = local.name_prefix
-  vpc_id        = module.vpc.vpc_id
-  subnet_id     = module.vpc.private_app_subnet_ids[0]
-  ami_id        = var.ansible_ami_id
-  instance_type = var.ansible_instance_type
+  name                     = local.name_prefix
+  vpc_id                   = module.vpc.vpc_id
+  subnet_id                = module.vpc.private_app_subnet_ids[0]
+  ami_id                   = var.ansible_ami_id
+  instance_type            = var.ansible_instance_type
+  ssm_bucket_force_destroy = var.ansible_ssm_bucket_force_destroy
 
   tags = local.tags
 }
@@ -134,8 +137,9 @@ resource "aws_ssm_document" "ansible_bootstrap" {
 }
 
 resource "aws_ssm_association" "ansible_bootstrap" {
-  count = var.enable_ansible_bootstrap ? 1 : 0
-  name  = aws_ssm_document.ansible_bootstrap[0].name
+  count                            = var.enable_ansible_bootstrap ? 1 : 0
+  name                             = aws_ssm_document.ansible_bootstrap[0].name
+  wait_for_success_timeout_seconds = 900
 
   targets {
     key    = "tag:Role"
@@ -167,22 +171,4 @@ resource "aws_security_group_rule" "this" {
 
   cidr_blocks              = try(each.value.cidr_blocks, null)
   source_security_group_id = try(each.value.source_security_group_id, null)
-}
-
-####################################################################
-## GitHub Actions OIDC (module)
-####################################################################
-
-module "github_actions" {
-  source = "../../modules/github-actions"
-
-  name_prefix                 = local.name_prefix
-  project                     = var.project
-  environment                 = var.environment
-  openid_connect_url          = var.openid_connect_url
-  client_id_list              = var.client_id_list
-  github_actions_subjects     = var.github_actions_subjects
-  role_name                   = var.github_actions_role_name
-
-  tags = local.tags
 }

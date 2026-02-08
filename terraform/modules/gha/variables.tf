@@ -33,6 +33,12 @@ variable "role_name" {
   description = "IAM role name for GitHub Actions"
 }
 
+variable "ssm_document_name" {
+  type        = string
+  description = "Optional override for the SSM document name"
+  default     = ""
+}
+
 variable "tags" {
   type        = map(string)
   description = "Tags applied to GitHub Actions resources"
